@@ -1,0 +1,139 @@
+# Start by creating variables for the tree, range and output 
+range_fn = "DATA/DEC_states.nex"
+tree_fn = "DATA/DEC_tree.tre"
+out_fn = "OUT/m1/mle"
+
+# Next, information that informs the distances between states
+dist_fn = "DATA/distances.txt"
+
+# How many generations should we run the MCMC for
+n_gen <- 200000
+
+# Create vector that contains all our moves and monitors vectors
+moves = VectorMoves()
+monitors = VectorMonitors()
+
+# Read in the range data
+dat_range_01 = readDiscreteCharacterData(range_fn)
+n_areas <- dat_range_01.nchar()
+
+# Now we will restrit ranges from being larger than two in the analysis. This will hopefully drive down computation time
+# First, compute the number of states
+
+max_areas <- 2
+n_states <- 0
+for (k in 0:max_areas) {
+  n_states += choose(n_areas,k)
+  }
+
+# Reformat the dataset for the reduced state space
+dat_range_n = formatDiscreteCharacterData(dat_range_01, "DEC", n_states)
+
+# Record the complete list of range descriptions to file
+state_desc = dat_range_n.getStateDescriptions()
+    state_desc_str = "state,range\n"
+    for (i in 1:state_desc.size())
+    {
+        state_desc_str += (i-1) + "," + state_desc[i] + "\n"
+    }
+#    write(state_desc_str, file=out_fn+".state_labels.txt")
+
+### Read in the dated phylogeny
+tree <- readTrees(tree_fn)[1]
+
+### Read in the distance matrix between all pairs of areas (km)
+distances <- readDelimitedDataFile(file=dist_fn, delimiter=" ")
+
+# Create parameters for arrival rate of anagenic range evolution events. Use a uniform prior
+rate_bg ~ dnLoguniform(1E-4,1E2)
+rate_bg.setValue(1E-2)
+
+# Create move update
+moves.append( mvSlide(rate_bg, weight=4) )
+
+# Fix dispersal rate to 1
+dispersal_rate <- 1.0
+
+# Dispersal rates are now scaled by distance
+distance_scale ~ dnUnif(0,20)
+distance_scale.setValue(0.01)
+moves.append( mvScale(distance_scale, weight=3) )
+
+# Set dispersal rates. 
+for(i in 1:n_areas){
+  for(j in 1:n_areas){
+    dr[i][j] := dispersal_rate * exp(-distance_scale * distances[i][j])
+  }
+}
+
+# Assign priors
+log_sd <- 0.5
+log_mean <- ln(1)-0.5*log_sd^2
+extirpation_rates ~ dnLognormal(mean=log_mean, sd=log_sd)
+moves.append( mvScale(extirpation_rates, weight=2) )
+
+# And now the extirpation matrix structure
+for (i in 1:n_areas) {
+  for (j in 1:n_areas) {
+    er[i][j] <- 0.0       
+  }
+  er[i][i] := extirpation_rates
+}
+
+# Now we have vectors for dispersal rate and extripation rate. Make a DEC rate matrix
+Q_DEC := fnDECRateMatrix(dispersalRates=dr, 
+                          extirpationRates=er,
+                          maxRangeSize=max_areas)
+
+# Create the Cladogenic Probability Matrix
+clado_event_types <- [ "s", "a" ]
+clado_event_probs <- simplex(1, 1)
+P_DEC := fnDECCladoProbs(eventProbs=clado_event_probs,
+                          eventTypes=clado_event_types,
+                          numCharacters=n_areas,
+                          maxRangeSize=max_areas)
+
+# Force the state of the root node to be Eastern North America
+#rf_DEC_tmp <- rep(0, n_states)
+#rf_DEC_tmp[n_areas+1] <- 1
+#rf_DEC <- simplex(rf_DEC_tmp)
+
+# Now that all the model components are in place, we can make the model object
+m_bg ~ dnPhyloCTMCClado(tree=tree,
+                           Q=Q_DEC,
+                           cladoProbs=P_DEC,
+                           branchRates=rate_bg,
+                           nSites=1,
+                           type="NaturalNumbers")
+
+m_bg.clamp(dat_range_n)
+
+# Add the monitors
+monitors = VectorMonitors()
+monitors.append( mnScreen(rate_bg, extirpation_rates, printgen=100) )
+monitors.append( mnModel(file=out_fn+".params.log", printgen=10) )
+monitors.append( mnFile(tree, file=out_fn+".tre", printgen=10) )
+monitors.append( mnJointConditionalAncestralState(tree=tree,
+                                                  ctmc=m_bg,
+                                                  filename=out_fn+".states.log",
+                                                  type="NaturalNumbers",
+                                                  printgen=10,
+                                                  withTips=true,
+                                                  withStartStates=true) )
+monitors.append( mnStochasticCharacterMap(ctmc=m_bg,
+                                          filename=out_fn+".stoch.log",
+                                          printgen=100) )
+
+# Run the model
+mymodel = model(m_bg)
+# mymcmc = mcmc(mymodel,moves,monitors)
+# mymcmc.run(n_gen)
+
+# Calculate marginal likelihood of the model
+# Set up power probabilities
+pow_p = powerPosterior(mymodel, moves, monitors, out_fn+"_m1_power.out", cats=50)
+pow_p.burnin(generations=10000,tuningInterval=1000)
+pow_p.run(generations=1000)
+# Stepping Stone sampling of the MLE
+ss = steppingStoneSampler(file=out_fn+"_m1_power.out", powerColumnName="power", likelihoodColumnName="likelihood")
+ss.marginal()

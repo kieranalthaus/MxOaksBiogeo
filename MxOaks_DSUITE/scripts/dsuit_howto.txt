@@ -1,0 +1,18 @@
+# Got to vcftools conda environment
+conda activate vcftools
+
+# More code for subsetting the vcf file, after I indexed the vcf file
+bgzip SingleTipQuercus20231006-denovo-reallymin15tm90rm3-moreFileExt.vcf.gz 
+tabix -p vcf SingleTipQuercus20231006-denovo-reallymin15tm90rm3-moreFileExt.vcf.gz
+ 
+# Filter into two datasets, one for red oaks, one for white oaks
+bcftools view -S red_filter.txt SingleTipQuercus20231006-denovo-reallymin15tm90rm3-moreFileExt.vcf.gz > 20240524_redoak.vcf 
+bcftools view -S white_filter.txt SingleTipQuercus20231006-denovo-reallymin15tm90rm3-moreFileExt.vcf.gz > 20240524_whiteoak.vcf 
+
+# Rename files
+bcftools reheader -s red_rename.txt 20240524_redoak.vcf > 20240524_redoak_renamed.vcf
+bcftools reheader -s white_rename.txt 20240524_whiteoak.vcf > 20240524_whiteoak_renamed.vcf
+
+# Run dsuite
+../../Dsuite/Build/Dsuite Dtrios -c -n mx_red -t ../data/dsuite_red_whiteout.nwk ../data/20240524_redoak_renamed.vcf ../data/dsuite_red_filter.txt
+../../Dsuite/Build/Dsuite Dtrios -c -n mx_white -t ../data/dsuite_white_redout.nwk ../data/20240524_whiteoak_renamed.vcf ../data/dsuite_white_filter.txt
